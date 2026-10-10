@@ -1,0 +1,424 @@
+LOGISTICS APPLICATION - API DOCUMENTATION
+=========================================
+Base URL: http://localhost:8081
+Login type: HTTP Basic
+
+
+ABOUT THIS DOCUMENT
+-------------------
+This document explains every API of the Logistics Application: what it does, what to send
+and what you get back.
+
+The APIs are grouped into six modules: customers, warehouses, inventory, shipments,
+tracking and delivery. There is one more API to upload and view a file such as a screenshot.
+A step-by-step sample test run with two customers is given at the end.
+
+The APIs at a glance:
+  - Customers    : /api/customers
+  - Warehouses   : /api/warehouses
+  - Inventory    : /api/inventory
+  - Shipments    : /api/shipments
+  - Tracking     : /api/tracking
+  - Delivery     : /api/delivery
+  - File upload  : /api/files
+
+
+BASE URL AND LOGIN
+------------------
+Every API starts with http://localhost:8081 and needs a login, except the open links
+listed below. The login type is HTTP Basic.
+
+There are two users:
+  - admin / admin123  : can do everything, including delete.
+  - staff / staff123  : can create, read and update, but cannot delete.
+These two passwords are the default values and can be changed in application.properties.
+
+In Postman, open the Authorization tab, choose Basic Auth and type the username and password.
+In Swagger, click the Authorize button and type the same.
+
+If a tool asks for the raw header:
+  admin : Authorization: Basic YWRtaW46YWRtaW4xMjM=
+  staff : Authorization: Basic c3RhZmY6c3RhZmYxMjM=
+
+Open without a login: /swagger-ui.html, /v3/api-docs and /actuator/health.
+Any other API without a login, or with a wrong password, gives 401.
+A DELETE API with the staff login gives 403 with this message:
+
+{ "status": 403, "message": "Access denied - only ADMIN can delete records", "time": "2026-10-09T11:10:00.123456" }
+
+
+ORDER OF USE
+------------
+Create the data in this order, because each step needs the id from the step before:
+customer, warehouse, inventory, shipment, tracking and delivery.
+The ids in the examples are for a fresh database, so always use the ids you actually get back.
+
+
+SHIPMENT STATUS RULES
+---------------------
+A new shipment starts as PENDING. The status can change only in the allowed order,
+otherwise the API returns 400 with the message: Cannot change shipment status from X to Y.
+
+  - PENDING           can go to IN_TRANSIT or CANCELLED.
+  - IN_TRANSIT        can go to OUT_FOR_DELIVERY, DELIVERED or CANCELLED.
+  - OUT_FOR_DELIVERY  can go to DELIVERED or CANCELLED.
+  - DELIVERED and CANCELLED cannot change.
+
+Because of this, a delivery cannot be recorded while the shipment is still PENDING,
+so add a tracking update with IN_TRANSIT first.
+
+
+PAGING AND SORTING
+------------------
+Every list API returns the data page by page. Add this to the link:
+  ?page=0&size=5&sortBy=id&direction=asc
+
+  - page      : starts at 0 and cannot be negative.
+  - size      : number of records in a page (default 5, allowed 1 to 100).
+  - sortBy    : name of a field such as id or name (default id).
+  - direction : asc or desc (default asc).
+A wrong value gives a 400 message.
+
+A list API returns this shape:
+{ "content": [ { ...record... } ], "page": { "size": 5, "number": 0, "totalElements": 1, "totalPages": 1 } }
+
+
+ERROR RESPONSES
+---------------
+When something is wrong, the API returns a short JSON message with a proper status code.
+
+  - Validation fails (400):
+    { "email": "Email is not valid", "phone": "Phone must be 10 digits" }
+
+  - Record not found (404):
+    { "status": 404, "message": "Customer not found with id 99", "time": "..." }
+
+  - Duplicate or business rule (400):
+    { "status": 400, "message": "Email already exists: ravi@mail.com", "time": "..." }
+
+  - Bad JSON, wrong status value or wrong sortBy (400):
+    { "status": 400, "message": "Invalid input - check JSON format, enum values or sortBy field", "time": "..." }
+
+  - Unexpected error (500):
+    { "status": 500, "message": "Something went wrong", "time": "..." }
+
+  - Wrong link (404):
+    { "status": 404, "message": "The requested link was not found", "time": "..." }
+
+  - Wrong HTTP method (405):
+    { "status": 405, "message": "This HTTP method is not allowed for this link", "time": "..." }
+
+  - File upload problem (400):
+    { "status": 400, "message": "Only png, jpg, jpeg, pdf, doc, docx and txt files are allowed", "time": "..." }
+
+
+CUSTOMERS
+---------
+The customer APIs manage the people who send shipments.
+The email must be valid and unique, and the phone number must be exactly 10 digits.
+Name and address are required.
+Reading one customer is cached, and deleting a customer also deletes its shipments.
+
+  POST   /api/customers                    creates a customer (201)
+  GET    /api/customers?page=0&size=5      lists the customers
+  GET    /api/customers/{id}               gets one customer
+  PUT    /api/customers/{id}               updates a customer
+  DELETE /api/customers/{id}               deletes a customer (admin only)
+
+Input for POST and PUT:
+{ "name": "Ravi Kumar", "email": "ravi@mail.com", "phone": "9876543210", "address": "Main Street, Chennai" }
+
+Output:
+{ "id": 1, "name": "Ravi Kumar", "email": "ravi@mail.com", "phone": "9876543210", "address": "Main Street, Chennai", "createdAt": "2026-10-09T10:45:12.123456" }
+
+DELETE returns the text: Customer deleted successfully
+
+
+WAREHOUSES
+----------
+The warehouse APIs manage the places where products are stored.
+Name and location are required, and the capacity must be at least 1.
+Deleting a warehouse also deletes its inventory items.
+
+  POST   /api/warehouses                   creates a warehouse (201)
+  GET    /api/warehouses?page=0&size=5     lists the warehouses
+  GET    /api/warehouses/{id}              gets one warehouse
+  PUT    /api/warehouses/{id}              updates a warehouse
+  DELETE /api/warehouses/{id}              deletes a warehouse (admin only)
+
+Input for POST and PUT:
+{ "name": "Central Warehouse", "location": "Chennai", "capacity": 5000 }
+
+Output:
+{ "id": 1, "name": "Central Warehouse", "location": "Chennai", "capacity": 5000 }
+
+DELETE returns the text: Warehouse deleted successfully
+
+
+INVENTORY
+---------
+The inventory APIs manage the products kept in a warehouse.
+The warehouseId must exist (404 if not), the product name is required and the quantity
+must be 0 or more.
+The total quantity inside one warehouse cannot go above its capacity, otherwise the API
+returns 400 with the message: Warehouse capacity exceeded.
+The low-stock API uses a native SQL query to find items below a given quantity.
+
+  POST   /api/inventory                    adds an item to a warehouse (201)
+  GET    /api/inventory?page=0&size=5      lists the items
+  GET    /api/inventory/low-stock?limit=10 lists the items with quantity below the limit
+  GET    /api/inventory/{id}               gets one item
+  PUT    /api/inventory/{id}               updates an item
+  DELETE /api/inventory/{id}               deletes an item (admin only)
+
+Input for POST and PUT:
+{ "warehouseId": 1, "productName": "Mobile", "quantity": 5 }
+
+Output:
+{ "id": 1, "warehouseId": 1, "productName": "Mobile", "quantity": 5, "lastUpdated": "2026-10-09T10:50:03.456789" }
+
+The low-stock API returns a plain list of items in the same shape.
+DELETE returns the text: Inventory item deleted successfully
+
+
+SHIPMENTS
+---------
+The shipment APIs manage the parcels sent for customers.
+The customerId must exist (404 if not), and origin and destination are required.
+A new shipment always starts as PENDING, even if another status is sent.
+The by-status API uses a JPQL query.
+A shipment status change must follow the status rules given above.
+Deleting a shipment also deletes its tracking updates and delivery.
+
+  POST   /api/shipments                    creates a shipment (201)
+  GET    /api/shipments?page=0&size=5      lists the shipments
+  GET    /api/shipments/status/{status}    lists the shipments with that status
+  GET    /api/shipments/{id}               gets one shipment
+  PUT    /api/shipments/{id}               updates a shipment
+  DELETE /api/shipments/{id}               deletes a shipment (admin only)
+
+Input for POST and PUT:
+{ "customerId": 1, "origin": "Chennai", "destination": "Mumbai" }
+
+Output:
+{ "id": 1, "customerId": 1, "origin": "Chennai", "destination": "Mumbai", "status": "PENDING", "shipmentDate": "2026-10-09T10:55:20.111111" }
+
+The by-status API returns a plain list of shipments in the same shape.
+DELETE returns the text: Shipment deleted successfully
+
+
+TRACKING
+--------
+The tracking APIs record where a shipment is.
+The shipmentId must exist, the location is required, and the status is required and must
+follow the status rules.
+When a tracking update is created, the shipment status is changed to the same status in
+the same transaction.
+A PUT can change only the location. A different status gives 400, so a new tracking update
+must be added to change the status.
+
+  POST   /api/tracking                           adds a tracking update (201)
+  GET    /api/tracking?page=0&size=5             lists the tracking entries
+  GET    /api/tracking/shipment/{shipmentId}     full history of one shipment, newest first
+  GET    /api/tracking/{id}                      gets one tracking entry
+  PUT    /api/tracking/{id}                      updates a tracking entry
+  DELETE /api/tracking/{id}                      deletes a tracking entry (admin only)
+
+Input for POST and PUT:
+{ "shipmentId": 1, "location": "Bangalore Hub", "status": "IN_TRANSIT" }
+
+Output:
+{ "id": 1, "shipmentId": 1, "location": "Bangalore Hub", "status": "IN_TRANSIT", "timestamp": "2026-10-09T11:00:45.222222" }
+
+DELETE returns the text: Tracking entry deleted successfully
+
+
+DELIVERY
+--------
+The delivery APIs record the final delivery of a shipment.
+The shipmentId must exist, and deliveredBy and status are required.
+The status must be DELIVERED, and any other value gives 400 with the message:
+Status must be DELIVERED.
+Only one delivery is allowed for each shipment, and the shipment must be allowed to move
+to DELIVERED.
+When a delivery is created, the shipment is marked DELIVERED in the same transaction.
+
+  POST   /api/delivery                     records a delivery (201)
+  GET    /api/delivery?page=0&size=5       lists the deliveries
+  GET    /api/delivery/{id}                gets one delivery
+  PUT    /api/delivery/{id}                updates a delivery
+  DELETE /api/delivery/{id}                deletes a delivery (admin only)
+
+Input for POST and PUT:
+{ "shipmentId": 1, "deliveredBy": "Suresh", "status": "DELIVERED" }
+
+Output:
+{ "id": 1, "shipmentId": 1, "deliveredBy": "Suresh", "status": "DELIVERED", "deliveryDate": "2026-10-09T11:05:10.333333" }
+
+DELETE returns the text: Delivery deleted successfully
+
+
+FILE UPLOAD
+-----------
+The file APIs let the user upload a screenshot or a document and view it later.
+The allowed types are png, jpg, jpeg, pdf, doc, docx and txt, and the maximum size is 5 MB.
+The files are saved in the uploads folder of the project.
+
+  POST /api/files               uploads a file and returns the saved file name
+  GET  /api/files/{fileName}    shows the file (images and pdf open in the response,
+                                Word files download)
+
+In Postman: choose POST, open the Body tab, select form-data, type file as the key,
+change the key type from Text to File, and pick the file.
+The upload returns the saved file name, for example:
+1696843200000_screenshot.png
+
+Use that saved name in the GET link:
+GET http://localhost:8081/api/files/1696843200000_screenshot.png
+
+A wrong upload gives 400 with a clear message: no file sent, a file type that is not
+allowed, or a file bigger than 5 MB. A file name that does not exist gives 404.
+
+
+OTHER LINKS
+-----------
+  /swagger-ui.html    shows every API in the browser (no login needed)
+  /v3/api-docs        the same description in JSON (no login needed)
+  /actuator/health    shows whether the application is up; full details only for
+                      logged-in users (no login needed)
+  /actuator/info      application info (login needed)
+  /actuator/metrics   metrics (login needed)
+  /actuator/caches    shows the customers cache (login needed)
+
+
+SAMPLE TEST RUN WITH TWO CUSTOMERS
+==================================
+This run starts from an empty database and uses every API once.
+Log in as admin, and add http://localhost:8081 in front of every link.
+The ids are the ones you get on a fresh database.
+
+CUSTOMERS
+ 1. POST /api/customers with
+    { "name": "Ravi Kumar", "email": "ravi@mail.com", "phone": "9876543210", "address": "Main Street, Chennai" }
+    gives customer 1.
+ 2. POST /api/customers with
+    { "name": "Anita Das", "email": "anita@mail.com", "phone": "9123456780", "address": "Park Road, Mumbai" }
+    gives customer 2.
+ 3. GET /api/customers?page=0&size=5&sortBy=name&direction=asc lists both customers.
+ 4. GET /api/customers/1 and GET /api/customers/2 show one customer each.
+ 5. PUT /api/customers/2 with
+    { "name": "Anita Das", "email": "anita@mail.com", "phone": "9000000000", "address": "New Road, Mumbai" }
+    updates customer 2.
+
+WAREHOUSES
+ 6. POST /api/warehouses with
+    { "name": "Central Warehouse", "location": "Chennai", "capacity": 5000 }
+    gives warehouse 1.
+ 7. POST /api/warehouses with
+    { "name": "North Warehouse", "location": "Delhi", "capacity": 3000 }
+    gives warehouse 2.
+ 8. GET /api/warehouses?page=0&size=5 and GET /api/warehouses/1 show the warehouses.
+ 9. PUT /api/warehouses/2 with
+    { "name": "North Warehouse", "location": "Delhi", "capacity": 3500 }
+    updates warehouse 2.
+
+INVENTORY
+10. POST /api/inventory with
+    { "warehouseId": 1, "productName": "Laptop", "quantity": 40 }
+    gives item 1.
+11. POST /api/inventory with
+    { "warehouseId": 1, "productName": "Mobile", "quantity": 5 }
+    gives item 2.
+12. POST /api/inventory with
+    { "warehouseId": 2, "productName": "Keyboard", "quantity": 8 }
+    gives item 3.
+13. GET /api/inventory?page=0&size=5 and GET /api/inventory/1 show the items.
+14. GET /api/inventory/low-stock?limit=10 returns Mobile and Keyboard.
+15. PUT /api/inventory/2 with
+    { "warehouseId": 1, "productName": "Mobile", "quantity": 50 }
+    updates the Mobile stock.
+
+SHIPMENTS
+16. POST /api/shipments with
+    { "customerId": 1, "origin": "Chennai", "destination": "Mumbai" }
+    gives shipment 1 with status PENDING.
+17. POST /api/shipments with
+    { "customerId": 2, "origin": "Delhi", "destination": "Chennai" }
+    gives shipment 2 with status PENDING.
+18. GET /api/shipments?page=0&size=5 and GET /api/shipments/1 show the shipments.
+19. GET /api/shipments/status/PENDING returns both shipments.
+20. PUT /api/shipments/2 with
+    { "customerId": 2, "origin": "Delhi", "destination": "Bangalore" }
+    changes the destination of shipment 2.
+
+TRACKING
+21. POST /api/tracking with
+    { "shipmentId": 1, "location": "Bangalore Hub", "status": "IN_TRANSIT" }
+    gives tracking 1, and shipment 1 becomes IN_TRANSIT.
+22. POST /api/tracking with
+    { "shipmentId": 1, "location": "Mumbai Local Hub", "status": "OUT_FOR_DELIVERY" }
+    gives tracking 2, and shipment 1 becomes OUT_FOR_DELIVERY.
+23. POST /api/tracking with
+    { "shipmentId": 2, "location": "Delhi Hub", "status": "IN_TRANSIT" }
+    gives tracking 3, and shipment 2 becomes IN_TRANSIT.
+24. GET /api/tracking?page=0&size=5, GET /api/tracking/1 and GET /api/tracking/shipment/1
+    show the tracking entries. The last one shows the history of shipment 1, newest first.
+25. PUT /api/tracking/3 with
+    { "shipmentId": 2, "location": "Delhi Airport Hub", "status": "IN_TRANSIT" }
+    updates tracking 3.
+26. GET /api/shipments/status/IN_TRANSIT returns shipment 2.
+
+DELIVERY
+27. POST /api/delivery with
+    { "shipmentId": 1, "deliveredBy": "Suresh", "status": "DELIVERED" }
+    gives delivery 1, and shipment 1 becomes DELIVERED.
+28. POST /api/delivery with
+    { "shipmentId": 2, "deliveredBy": "Ramesh", "status": "DELIVERED" }
+    gives delivery 2, and shipment 2 becomes DELIVERED.
+29. GET /api/delivery?page=0&size=5 and GET /api/delivery/1 show the deliveries.
+30. PUT /api/delivery/2 with
+    { "shipmentId": 2, "deliveredBy": "Mahesh", "status": "DELIVERED" }
+    updates delivery 2.
+31. GET /api/shipments/status/DELIVERED returns both shipments.
+
+FILE UPLOAD
+32. POST /api/files with the Body set to form-data, the key file (type File) and a png,
+    jpg, pdf or docx file gives the saved file name.
+33. GET /api/files/ followed by the saved file name shows the file.
+
+ERROR AND LOGIN CHECKS
+34. POST /api/customers again with the email ravi@mail.com gives 400 Email already exists.
+35. POST /api/customers with the phone 123 gives 400 with the message Phone must be 10 digits.
+36. GET /api/customers/99 gives 404 Customer not found.
+37. POST /api/delivery again for shipmentId 1 gives 400 because a delivery is already recorded.
+38. GET /api/shipments/status/ABC gives 400 Invalid input.
+39. PUT /api/tracking/3 with a different status, for example OUT_FOR_DELIVERY, gives 400
+    because the tracking status cannot be changed.
+40. POST /api/delivery with the status banana gives 400 with the message
+    Status must be DELIVERED.
+41. GET /api/customers?page=-1 gives 400 Page number cannot be negative, and
+    GET /api/customers?page=0&size=0 gives 400 Page size must be between 1 and 100.
+42. GET /api/nothing gives 404 The requested link was not found.
+43. PATCH /api/customers/1 gives 405 because that HTTP method is not allowed for the link.
+44. POST /api/files without a file in the Body gives 400 Please send the file as form-data
+    with the key file.
+45. Any API without a login gives 401.
+46. Any DELETE API with the staff login gives 403.
+
+DELETE (ADMIN ONLY)
+47. Delete in this order:
+    DELETE /api/delivery/2
+    DELETE /api/delivery/1
+    DELETE /api/tracking/3
+    DELETE /api/tracking/2
+    DELETE /api/tracking/1
+    DELETE /api/shipments/2
+    DELETE /api/shipments/1
+    DELETE /api/inventory/3
+    DELETE /api/inventory/2
+    DELETE /api/inventory/1
+    DELETE /api/warehouses/2
+    DELETE /api/warehouses/1
+    DELETE /api/customers/2
+    DELETE /api/customers/1
+    Each one returns a short success message.
